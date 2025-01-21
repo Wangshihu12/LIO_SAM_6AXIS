@@ -786,64 +786,83 @@ class mapOptimization : public ParamServer
 
   void updateInitialGuess()
   {
-    // save current transformation before any processing
-    incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);
+      // 保存当前的变换矩阵，以便后续处理
+      incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);
 
-    static Eigen::Affine3f lastImuTransformation;
-    // initialization
-    if (cloudKeyPoses3D->points.empty())
-    {
-      transformTobeMapped[0] = cloudInfo.imuRollInit;
-      transformTobeMapped[1] = cloudInfo.imuPitchInit;
-      transformTobeMapped[2] = cloudInfo.imuYawInit;
+      // 静态变量，用于保存上次的IMU变换
+      static Eigen::Affine3f lastImuTransformation;
 
-      if (!useImuHeadingInitialization)
-        transformTobeMapped[2] = 0;
-
-      lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
-      return;
-    }
-
-    // use imu pre-integration estimation for pose guess
-    static bool lastImuPreTransAvailable = false;
-    static Eigen::Affine3f lastImuPreTransformation;
-    if (cloudInfo.odomAvailable == true)
-    {
-      Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initialGuessX,    cloudInfo.initialGuessY,     cloudInfo.initialGuessZ,
-                                                         cloudInfo.initialGuessRoll, cloudInfo.initialGuessPitch, cloudInfo.initialGuessYaw);
-      if (lastImuPreTransAvailable == false)
+      // 初始化部分，如果云点数据为空
+      if (cloudKeyPoses3D->points.empty())
       {
-        lastImuPreTransformation = transBack;
-        lastImuPreTransAvailable = true;
-      } else {
-        Eigen::Affine3f transIncre = lastImuPreTransformation.inverse() * transBack;
-        Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
-        Eigen::Affine3f transFinal = transTobe * transIncre;
-        pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
-                                          transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+          // 使用IMU初始化的角度（俯仰、滚转、偏航角）作为初始猜测
+          transformTobeMapped[0] = cloudInfo.imuRollInit;  // 滚转角
+          transformTobeMapped[1] = cloudInfo.imuPitchInit; // 俯仰角
+          transformTobeMapped[2] = cloudInfo.imuYawInit;   // 偏航角
 
-        lastImuPreTransformation = transBack;
+          // 如果不使用IMU航向初始化，则将偏航角设置为0
+          if (!useImuHeadingInitialization)
+              transformTobeMapped[2] = 0;
 
-        lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
-        return;
+          // 将当前的IMU位姿保存，作为初始化前的IMU变换
+          lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
+          return;  // 初始化完成，返回
       }
-    }
 
-    // use imu incremental estimation for pose guess (only rotation)
-    if (cloudInfo.imuAvailable == true)
-    {
-      Eigen::Affine3f transBack = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
-      Eigen::Affine3f transIncre = lastImuTransformation.inverse() * transBack;
+      // 使用IMU预积分估计位姿
+      static bool lastImuPreTransAvailable = false;  // 标记IMU预积分数据是否可用
+      static Eigen::Affine3f lastImuPreTransformation; // 保存上次的IMU预积分变换
+      if (cloudInfo.odomAvailable == true) // 如果里程计数据可用
+      {
+          // 根据初始猜测位置（x, y, z 和 Roll, Pitch, Yaw）计算变换
+          Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initialGuessX, cloudInfo.initialGuessY, cloudInfo.initialGuessZ,
+                                                            cloudInfo.initialGuessRoll, cloudInfo.initialGuessPitch, cloudInfo.initialGuessYaw);
+          if (lastImuPreTransAvailable == false) // 如果没有上次的IMU预积分变换
+          {
+              lastImuPreTransformation = transBack;  // 保存当前的初始猜测变换
+              lastImuPreTransAvailable = true;        // 标记IMU预积分变换可用
+          } else {
+              // 计算当前IMU预积分变换和上次的预积分变换之间的增量
+              Eigen::Affine3f transIncre = lastImuPreTransformation.inverse() * transBack;
+              Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);  // 获取当前的位姿（变换矩阵）
+              Eigen::Affine3f transFinal = transTobe * transIncre;  // 将增量变换应用到当前位姿上
 
-      Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
-      Eigen::Affine3f transFinal = transTobe * transIncre;
-      pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
-                                        transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+              // 更新当前的位姿变换矩阵
+              pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
+                                                transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
 
-      lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
-      return;
-    }
+              // 保存当前的IMU预积分变换
+              lastImuPreTransformation = transBack;
+
+              // 保存当前的IMU变换（不含位移）
+              lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
+              return;  // 返回，更新完成
+          }
+      }
+
+      // 使用IMU增量估计位姿（仅旋转部分）
+      if (cloudInfo.imuAvailable == true) // 如果IMU数据可用
+      {
+          // 计算当前IMU变换（仅旋转，不含位移）
+          Eigen::Affine3f transBack = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
+          // 计算当前变换和上次保存的变换之间的增量
+          Eigen::Affine3f transIncre = lastImuTransformation.inverse() * transBack;
+
+          // 获取当前的位姿变换矩阵
+          Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
+          // 应用增量变换
+          Eigen::Affine3f transFinal = transTobe * transIncre;
+
+          // 更新当前位姿
+          pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
+                                            transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+
+          // 保存当前的IMU变换
+          lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
+          return;  // 返回，更新完成
+      }
   }
+
 
   void extractForLoopClosure()
   {

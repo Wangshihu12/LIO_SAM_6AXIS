@@ -12,9 +12,11 @@
 
 #include "utility.h"
 
-class GNSSOdom : public ParamServer {
+class GNSSOdom : public ParamServer
+{
 public:
-    GNSSOdom(ros::NodeHandle &_nh) {
+    GNSSOdom(ros::NodeHandle &_nh)
+    {
         nh = _nh;
         gpsSub = nh.subscribe(gpsTopic, 1000, &GNSSOdom::GNSSCB, this,
                               ros::TransportHints().tcpNoDelay());
@@ -24,14 +26,17 @@ public:
     }
 
 private:
-    void GNSSCB(const sensor_msgs::NavSatFixConstPtr &msg) {
+    void GNSSCB(const sensor_msgs::NavSatFixConstPtr &msg)
+    {
         std::cout << "gps status: " << msg->status.status << std::endl;
-        if (std::isnan(msg->latitude + msg->longitude + msg->altitude)) {
+        if (std::isnan(msg->latitude + msg->longitude + msg->altitude))
+        {
             return;
         }
         Eigen::Vector3d lla(msg->latitude, msg->longitude, msg->altitude);
-        //std::cout << "LLA: " << lla.transpose() << std::endl;
-        if (!initENU) {
+        // std::cout << "LLA: " << lla.transpose() << std::endl;
+        if (!initENU)
+        {
             ROS_INFO("Init Orgin GPS LLA  %f, %f, %f", msg->latitude, msg->longitude,
                      msg->altitude);
             geo_converter.Reset(lla[0], lla[1], lla[2]);
@@ -60,7 +65,8 @@ private:
         // LLA->ENU, better accuacy than gpsTools especially for z value
         geo_converter.Forward(lla[0], lla[1], lla[2], x, y, z);
         Eigen::Vector3d enu(x, y, z);
-        if (abs(enu.x()) > 10000 || abs(enu.x()) > 10000 || abs(enu.x()) > 10000) {
+        if (abs(enu.x()) > 10000 || abs(enu.x()) > 10000 || abs(enu.x()) > 10000)
+        {
             /** check your lla coordinate */
             ROS_INFO("Error ogigin : %f, %f, %f", enu(0), enu(1), enu(2));
             return;
@@ -69,8 +75,9 @@ private:
         bool orientationReady = false;
         double yaw = 0.0;
         double distance =
-                sqrt(pow(enu(1) - prev_pose_left(1), 2) + pow(enu(0) - prev_pose_left(0), 2));
-        if (distance > 0.1) {
+            sqrt(pow(enu(1) - prev_pose_left(1), 2) + pow(enu(0) - prev_pose_left(0), 2));
+        if (distance > 0.1)
+        {
             // 返回值是此点与远点连线与x轴正方向的夹角
             yaw = atan2(enu(1) - prev_pose_left(1), enu(0) - prev_pose_left(0));
             yaw_quat_left = tf::createQuaternionMsgFromYaw(yaw);
@@ -99,7 +106,6 @@ private:
         odom_msg.pose.pose.orientation = yaw_quat_left;
         left_odom_pub.publish(odom_msg);
 
-
         /** just for gnss visualization */
         // publish path
         left_path.header.frame_id = odometryFrame;
@@ -117,7 +123,6 @@ private:
         left_path_pub.publish(left_path);
     }
 
-
     ros::NodeHandle nh;
     ros::Publisher left_odom_pub, left_path_pub, init_origin_pub;
     ros::Subscriber gpsSub;
@@ -132,7 +137,8 @@ private:
     geometry_msgs::Quaternion yaw_quat_left;
 };
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     ros::init(argc, argv, "lio_sam_6axis");
     ros::NodeHandle nh;
     GNSSOdom gps(nh);
