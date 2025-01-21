@@ -491,6 +491,12 @@ public:
         return thisPose6D;
     }
 
+    // 这个函数用于同步GPS数据和激光雷达数据
+    // 输入参数:
+    // gpsBuf - GPS消息队列缓存
+    // aligedGps - 用于存储对齐后的GPS消息
+    // timestamp - 当前激光雷达时间戳
+    // eps_cam - 时间同步容差
     bool syncGPS(std::deque<nav_msgs::Odometry> &gpsBuf,
                  nav_msgs::Odometry &aligedGps, double timestamp,
                  double eps_cam)
@@ -498,23 +504,25 @@ public:
         bool hasGPS = false;
         while (!gpsQueue.empty())
         {
-            mtxGpsInfo.lock();
+            mtxGpsInfo.lock(); // 加锁保护GPS队列
+            
+            // 如果GPS消息太旧(早于激光雷达时间戳-容差),则丢弃
             if (gpsQueue.front().header.stamp.toSec() < timestamp - eps_cam)
             {
-                // message too old
                 gpsQueue.pop_front();
                 mtxGpsInfo.unlock();
             }
+            // 如果GPS消息太新(晚于激光雷达时间戳+容差),则退出循环
             else if (gpsQueue.front().header.stamp.toSec() > timestamp + eps_cam)
             {
-                // message too new
                 mtxGpsInfo.unlock();
                 break;
             }
+            // GPS消息在容差范围内,则认为同步成功
             else
             {
                 hasGPS = true;
-                aligedGps = gpsQueue.front();
+                aligedGps = gpsQueue.front(); // 取出对齐的GPS消息
                 gpsQueue.pop_front();
                 //                if (debugGps)
                 //                    ROS_INFO("GPS time offset %f ",
@@ -523,6 +531,7 @@ public:
             }
         }
 
+        // 返回是否找到同步的GPS消息
         if (hasGPS)
             return true;
         else
@@ -1198,38 +1207,39 @@ public:
         pubGpsConstraintEdge.publish(markerArray);
     }
 
+    // 这个函数用于更新机器人的初始位姿估计
     void updateInitialGuess()
     {
-        // save current transformation before any processing
+        // 保存当前变换矩阵,用于后续处理
         incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);
         static Eigen::Affine3f lastImuTransformation;
 
-        // initialization the first frame
+        // 如果是第一帧数据,需要进行初始化
         if (cloudKeyPoses3D->points.empty())
         {
             systemInitialized = false;
-            if (useGPS)
+            if (useGPS) // 如果使用GPS
             {
                 ROS_INFO("GPS use to init pose");
-                /** when you align gnss and lidar timestamp, make sure (1.0/gpsFrequence) is small encougn
-                 *  no need to care about the real gnss frquency. time alignment fail will cause
-                 *  "[ERROR] [1689196991.604771416]: sysyem need to be initialized"
-                 * */
+                /** 
+                 * 当对齐GPS和激光雷达时间戳时,确保(1.0/gpsFrequence)足够小
+                 * 不需要关心实际的GPS频率。时间对齐失败会导致错误提示
+                 */
                 nav_msgs::Odometry alignedGPS;
                 if (syncGPS(gpsQueue, alignedGPS, timeLaserInfoCur, 1.0 / gpsFrequence))
                 {
-                    /** we store the origin wgs84 coordinate points in covariance[1]-[3] */
+                    /** 在协方差矩阵[1]-[3]中存储原始WGS84坐标点 */
                     originLLA.setIdentity();
                     originLLA = Eigen::Vector3d(alignedGPS.pose.covariance[1],
                                                 alignedGPS.pose.covariance[2],
                                                 alignedGPS.pose.covariance[3]);
-                    /** set your map origin points */
+                    /** 设置地图原点 */
                     geo_converter.Reset(originLLA[0], originLLA[1], originLLA[2]);
-                    // WGS84->ENU, must be (0,0,0)
+                    // WGS84转ENU坐标,必须是(0,0,0)
                     Eigen::Vector3d enu;
                     geo_converter.Forward(originLLA[0], originLLA[1], originLLA[2], enu[0], enu[1], enu[2]);
 
-                    if (debugGps)
+                    if (debugGps) // 调试信息输出
                     {
                         double roll, pitch, yaw;
                         tf::Matrix3x3(tf::Quaternion(alignedGPS.pose.pose.orientation.x,
@@ -1242,8 +1252,10 @@ public:
                         std::cout << "GPS LLA: " << originLLA.transpose() << std::endl;
                     }
 
-                    /** add the first factor, we need this origin GPS point for prior map based localization,
-                     * but we need to optimize its value by pose graph if the origin gps RTK status is not fixed.*/
+                    /** 
+                     * 添加第一个因子,这个原点GPS对基于先验地图的定位很重要
+                     * 但如果原点GPS的RTK状态不是固定解,我们需要通过位姿图优化其值
+                     */
                     PointType gnssPoint;
                     gnssPoint.x = enu[0],
                     gnssPoint.y = enu[1],
@@ -1252,12 +1264,11 @@ public:
                     float noise_y = alignedGPS.pose.covariance[7];
                     float noise_z = alignedGPS.pose.covariance[14];
 
-                    /** if we get reliable origin point, we adjust the weight of this gps factor to fix the map origin */
-                    // if (!updateOrigin) {
+                    /** 如果获得可靠的原点,调整GPS因子权重以固定地图原点 */
                     noise_x *= 1e-4;
                     noise_y *= 1e-4;
                     noise_z *= 1e-4;
-                    // }
+
                     gtsam::Vector Vector3(3);
                     Vector3 << noise_x, noise_y, noise_z;
                     noiseModel::Diagonal::shared_ptr gps_noise =
@@ -1267,6 +1278,7 @@ public:
                     keyframeGPSfactor.push_back(gps_factor);
                     cloudKeyGPSPoses3D->points.push_back(gnssPoint);
 
+                    // 使用IMU的姿态角进行初始化
                     transformTobeMapped[0] = cloudInfo.imuRollInit;
                     transformTobeMapped[1] = cloudInfo.imuPitchInit;
                     transformTobeMapped[2] = cloudInfo.imuYawInit;
@@ -1279,7 +1291,7 @@ public:
                     ROS_WARN("GPS init success");
                 }
             }
-            else
+            else // 不使用GPS时的初始化
             {
                 transformTobeMapped[0] = cloudInfo.imuRollInit;
                 transformTobeMapped[1] = cloudInfo.imuPitchInit;
@@ -1297,18 +1309,20 @@ public:
             }
         }
 
+        // 检查系统是否已初始化
         if (!systemInitialized)
         {
             ROS_ERROR("sysyem need to be initialized");
             return;
         }
 
-        // if not the first frame
-        // use imu pre-integration estimation for pose guess
+        // 非第一帧数据处理
+        // 使用IMU预积分估计作为位姿猜测
         static bool lastImuPreTransAvailable = false;
         static Eigen::Affine3f lastImuPreTransformation;
         if (cloudInfo.odomAvailable == true)
         {
+            // 使用里程计信息更新位姿
             Eigen::Affine3f transBack = pcl::getTransformation(
                 cloudInfo.initialGuessX, cloudInfo.initialGuessY,
                 cloudInfo.initialGuessZ, cloudInfo.initialGuessRoll,
@@ -1320,6 +1334,7 @@ public:
             }
             else
             {
+                // 计算增量变换并更新位姿
                 Eigen::Affine3f transIncre =
                     lastImuPreTransformation.inverse() * transBack;
                 Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
@@ -1333,14 +1348,15 @@ public:
 
                 lastImuTransformation = pcl::getTransformation(
                     0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit,
-                    cloudInfo.imuYawInit); // save imu before return;
+                    cloudInfo.imuYawInit); // 保存IMU信息
                 return;
             }
         }
 
-        // use imu incremental estimation for pose guess (only rotation)
+        // 只使用IMU增量估计进行姿态猜测(仅旋转)
         if (cloudInfo.imuAvailable == true)
         {
+            // 使用IMU信息更新姿态
             Eigen::Affine3f transBack =
                 pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit,
                                        cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
@@ -1353,10 +1369,10 @@ public:
                 transformTobeMapped[5], transformTobeMapped[0],
                 transformTobeMapped[1], transformTobeMapped[2]);
 
-            // update last imu transformation
+            // 更新上一次IMU变换
             lastImuTransformation = pcl::getTransformation(
                 0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit,
-                cloudInfo.imuYawInit); // save imu before return;
+                cloudInfo.imuYawInit);
             return;
         }
     }
@@ -2031,56 +2047,48 @@ public:
         }
     }
 
+    // 添加GPS因子到位姿图优化中
     void addGPSFactor()
     {
+        // 如果GPS队列为空则返回
         if (gpsQueue.empty())
             return;
 
-        // wait for system initialized and settles down
+        // 等待系统初始化并稳定下来
+        // 如果位姿点云为空或只有一个点则返回
         if (cloudKeyPoses3D->points.empty() || cloudKeyPoses3D->points.size() == 1)
             return;
-        //    else {
-        //      if (pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back())
-        //      < 5.0)
-        //        return;
-        //    }
 
-        // pose covariance small, no need to correct
-        //        if (poseCovariance(3, 3) < poseCovThreshold && poseCovariance(4,
-        //        4) < poseCovThreshold)
-        //            return;
-
-        // last gps position
-        static PointType lastGPSPoint;
+        // 同步GPS数据
         nav_msgs::Odometry thisGPS;
         if (syncGPS(gpsQueue, thisGPS, timeLaserInfoCur, 1.0 / gpsFrequence))
         {
-            // GPS too noisy, skip
+            // 检查GPS噪声水平
             float noise_x = thisGPS.pose.covariance[0];
             float noise_y = thisGPS.pose.covariance[7];
             float noise_z = thisGPS.pose.covariance[14];
 
-            // make sure the gps data is stable encough
+            // 如果GPS噪声太大则跳过
             if (abs(noise_x) > gpsCovThreshold || abs(noise_y) > gpsCovThreshold)
                 return;
 
-            //            float gps_x = thisGPS.pose.pose.position.x;
-            //            float gps_y = thisGPS.pose.pose.position.y;
-            //            float gps_z = thisGPS.pose.pose.position.z;
+            // 将GPS的经纬高坐标转换为XYZ坐标
             double gps_x = 0.0, gps_y = 0.0, gps_z = 0.0;
             Eigen::Vector3d LLA(thisGPS.pose.covariance[1], thisGPS.pose.covariance[2], thisGPS.pose.covariance[3]);
             geo_converter.Forward(LLA[0], LLA[1], LLA[2], gps_x, gps_y, gps_z);
 
+            // 如果不使用GPS高程,则使用激光SLAM估计的高度
             if (!useGpsElevation)
             {
                 gps_z = transformTobeMapped[5];
                 noise_z = 0.01;
             }
-            // GPS not properly initialized (0,0,0)
+
+            // 如果GPS未正确初始化(0,0,0)则返回
             if (abs(gps_x) < 1e-6 && abs(gps_y) < 1e-6)
                 return;
 
-            // Add GPS every a few meters
+            // 每隔几米添加一个GPS约束
             PointType curGPSPoint;
             curGPSPoint.x = gps_x;
             curGPSPoint.y = gps_y;
@@ -2090,6 +2098,7 @@ public:
             else
                 lastGPSPoint = curGPSPoint;
 
+            // 调试信息输出
             if (debugGps)
             {
                 ROS_INFO("curr gps pose: %f, %f , %f", gps_x, gps_y, gps_z);
@@ -2097,9 +2106,9 @@ public:
                          thisGPS.pose.covariance[7], thisGPS.pose.covariance[14]);
             }
 
+            // 创建GPS因子
             gtsam::Vector Vector3(3);
             Vector3 << noise_x, noise_y, noise_z;
-            // Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
             noiseModel::Diagonal::shared_ptr gps_noise =
                 noiseModel::Diagonal::Variances(Vector3);
             gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(),
@@ -2108,18 +2117,14 @@ public:
             keyframeGPSfactor.push_back(gps_factor);
             cloudKeyGPSPoses3D->points.push_back(curGPSPoint);
 
-            // only a trick!
-            // we need to accumulate some accurate gps points to initialize the
-            // transform between gps coordinate system and LIO coordinate system and
-            // then we can add gps points one by one into the pose graph or the whole
-            // pose graph will crashed if giving some respectively bad gps points at
-            // first.
+            // 累积足够的GPS点以初始化坐标系转换
             if (keyframeGPSfactor.size() < 20)
             {
                 ROS_INFO("Accumulated gps factor: %d", keyframeGPSfactor.size());
                 return;
             }
 
+            // GPS坐标系转换初始化
             if (!gpsTransfromInit)
             {
                 ROS_INFO("Initialize GNSS transform!");
@@ -2133,23 +2138,7 @@ public:
             }
             else
             {
-                // After the coordinate systems are aligned, in theory, the GPS z and
-                // the z estimated by the current LIO system should not be too
-                // different. Otherwise, there is a problem with the quality of the
-                // secondary GPS point.
-                //                if (abs(gps_z - cloudKeyPoses3D->back().z) > 10.0) {
-                //                    // ROS_WARN("Too large GNSS z noise %f", noise_z);
-                //                    gtsam::Vector Vector3(3);
-                //                    Vector3 << max(noise_x, 10000.0f), max(noise_y,
-                //                    10000.0f), max(noise_z, 100000.0f);
-                //                    // gps_noise =
-                //                    noiseModel::Diagonal::Variances(Vector3);
-                //                    // gps_factor =
-                //                    gtsam::GPSFactor(cloudKeyPoses3D->size(),
-                //                    gtsam::Point3(gps_x, gps_y, gps_z),
-                //                    // gps_noise);
-                //                }
-                // add loop constriant
+                // 添加GPS约束到位姿图中
                 mtxGraph.lock();
                 gtSAMgraph.add(gps_factor);
                 mtxGraph.unlock();
